@@ -35,6 +35,11 @@
             "Name": "GameplayAbilities",
             "Enabled": true,
             "Optional": false
+        },
+        {
+            "Name": "TargetingSystem",
+            "Enabled": true,
+            "Optional": false
         }
     ]
 }
