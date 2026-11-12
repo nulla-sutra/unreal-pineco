@@ -11,7 +11,9 @@ public class PinecoGAS : ModuleRules
 
         PublicDependencyModuleNames.AddRange(new[]
         {
-            "Core", "CoreUObject", "Engine", "GameplayAbilities", "GameplayTasks", "PinecoTrace"
+            "Core", "CoreUObject", "Engine", "TargetingSystem"
         });
+
+        PrivateDependencyModuleNames.Add("GameplayAbilities");
     }
 }

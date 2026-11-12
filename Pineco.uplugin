@@ -3,7 +3,7 @@
     "Version": 1,
     "VersionName": "1.0",
     "FriendlyName": "Pineco",
-    "Description": "",
+    "Description": "Animation event and GAS task extensions for Unreal Gameplay Targeting System.",
     "Category": "Other",
     "CreatedBy": "tarnishablec",
     "CreatedByURL": "https://github.com/tarnishablec",
@@ -14,11 +14,6 @@
     "IsExperimentalVersion": false,
     "Installed": false,
     "Modules": [
-        {
-            "Name": "PinecoTrace",
-            "Type": "Runtime",
-            "LoadingPhase": "Default"
-        },
         {
             "Name": "PinecoAnimation",
             "Type": "Runtime",
