@@ -15,6 +15,12 @@
     "Installed": false,
     "Modules": [
         {
+            "Name": "PinecoDebug",
+            "Type": "Runtime",
+            "LoadingPhase": "PostEngineInit",
+            "TargetConfigurationAllowList": ["Debug", "DebugGame", "Development"]
+        },
+        {
             "Name": "PinecoAnimation",
             "Type": "Runtime",
             "LoadingPhase": "Default"

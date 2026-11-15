@@ -6,12 +6,13 @@
 
 Pineco 是原生 Gameplay Targeting System 的动画事件与 GAS 规则扩展。原生 `UTargetingPreset` 保存按顺序执行的 Task，原生 Subsystem／AbilityTask 管理请求、上下文、结果和生命周期。形状查询、Actor 去重、距离排序和调试绘制复用引擎实现；Pineco 不再提供独立的 Trace、请求系统或执行器。
 
-- `PinecoAnimation` 仅包含 `UAnimNotify_PinecoTargeting`，把动画时机转换为携带原生 Preset 的本地 GameplayEvent。
-- `PinecoGAS` 仅包含 `UPinecoTargetingFilterTask_GAS` 与 `UPinecoTargetingFilterTask_Limit`，补充原生插件缺少的 ASC 资格过滤和数量上限。
+- `PinecoAnimation` 提供单次目标选择通知 `UAnimNotify_PinecoTargeting` 和时间窗口 `UAnimNotifyState_PinecoTargetingWindow`。
+- `PinecoGAS` 提供 ASC 资格过滤、目标数量上限，以及供 GAS 的 `WaitTargetData(CustomMulti)` 使用的 `APinecoTargetActor`。TargetActor 在服务端执行窗口 Preset，并把本窗口首次命中的 Actor 交给 GA。
+- `Content/Targeting/BP_PinecoTargetingFilter_FacingAngle` 继承原生 `USimpleTargetingFilterTask`，为原生查询结果补充水平朝向角度筛选。
 - 项目 Combo GA 负责原生 `WaitGameplayEvent` 监听、权限与动画上下文校验、原生 Targeting AbilityTask 和 GE 结算；Emboar 继续只负责连招推进与播放。
 - 其他触发机制直接使用原生 Targeting API，无须构造 AnimNotify 或伪造动画事件。Preset／Task 配置是共享资产，不在每次请求中改写；运行状态由原生请求持有。
 
-插件名仍为 `Pineco`，两个保留模块仍为 `PinecoAnimation`／`PinecoGAS`；`PinecoTargeting` 是 Notify 的业务名称。本次没有重命名插件目录、描述文件或保留模块。
+`PinecoDebug` 注册 Gameplay Debugger 的 `Pineco` 分类，读取权威端原生 Targeting 请求的几何参数和最终结果，在调试者所在的世界绘制。`PinecoAnimation` 和 `PinecoGAS` 可以独立于调试模块加载。
 
 ## UAnimNotify_PinecoTargeting
 
@@ -33,6 +34,12 @@ Notify 覆写原生 `Notify(USkeletalMeshComponent*, UAnimSequenceBase*, const F
 
 预测端和权威端各自接收本地动画事件，不在 Notify 内查询目标、发送 RPC、处理网络预测或施加 GE。Notify 不持有单次请求／角色／播放的运行状态，也不修改 Preset／Task。消费方从 `OptionalObject` 解析 Preset，在权威分支执行原生 Targeting；需要的当前 Montage 校验由项目 GA 完成。
 
+## UAnimNotifyState_PinecoTargetingWindow
+
+在 Montage 上添加 **Pineco Targeting Window**，拖动窗口两端设置时间，在 Details 的 `TargetingPreset` 字段选择原生 Preset。插招窗口使用原生 `UTargetingSelectionTask_AOE` 的 Box，在 Preset 上配置半尺寸、偏移和碰撞查询参数。
+
+该类型继承 UE 的 `UAnimNotify_PlayMontageNotifyWindow`。服务端在 Begin 和每次窗口 Tick 各发起一次查询，包括角色静止时。AOE 按查询时角色的位置与朝向取样，合并该请求内同一 Actor 的多次重叠。每次开窗时 TargetActor 建立独立的命中集合，只广播首次加入的 Actor。End 停止采样，中断使尚未返回的窗口结果失效。点打击和结尾甩击由 GA 独立执行各自的点通知 Preset，可以再次命中窗口内打过的目标。采用这种接线时，窗口 TargetActor 的 `PointEventTag` 留空。
+
 ## 原生 Preset 与两个补充 Task
 
 预期管线为 `原生 AOE → GAS Filter → 原生 SortByDistance → Limit`。原生 `UTargetingSelectionTask_AOE` 提供 Box／Cylinder／Sphere／Capsule／SourceComponent 及对象类型、偏移、旋转和忽略来源等配置；不再经过 `FInstancedStruct` 或结构自己的 `Evaluate`。结果按原生语义消费，Actor 位置不能解释为真实接触点。
@@ -49,15 +56,29 @@ Limit 不检查来源／ASC／权限，不重做过滤、去重或排序，不�
 
 项目 `GA_Linghou_Combo` 已使用原生 `UAbilityTask_PerformTargeting::PerformTargetingRequest`，quan1 的 `bAllowAsync = false`。在 `OnTargetReady` 回调内通过原生 Subsystem 的 `GetTargetingResultsActors` 读取 Actor 数组，经原生 `AbilityTargetDataFromActorArray` 转换 TargetData，再由现有 GE 节点逐目标结算；原生完成释放后不再借用请求结果。其他触发方式直接选用原生 Subsystem 或 Async Action，不添加新的 Pineco 请求包装器。
 
+## 水平朝向角度筛选蓝图
+
+`/Pineco/Targeting/BP_PinecoTargetingFilter_FacingAngle` 覆写原生 `USimpleTargetingFilterTask::BP_ShouldFilterTarget(const FTargetingRequestHandle&, const FTargetingDefaultResultData&) const`。返回 `true` 表示剔除；遍历、结果移除和请求完成由原生 Filter 基类管理。
+
+唯一配置 `float FullAngleDegrees = 150` 表示完整水平夹角，求值时限制到 `[0, 360]`，两侧各取一半。筛选以请求 `SourceActor` 求值当时的位置与前向，以及目标 Actor 中心位置为准；使用原生 `Vector_CosineAngle2D` 比较 XY 方向，边界保留。水平距离平方不大于 `1e-8 cm²` 时保留目标，避免重合位置的方向不定。无效目标、无法取得原生 Subsystem 或无效来源均剔除。
+
+原生 Subsystem 从已验证的目标 Actor 所在游戏实例取得，Task 资产自身不提供 World。Preset 持有各自内嵌的角度 Task 实例；Task 不保存来源、目标或请求运行状态，不施加效果。半径、高度、对象类型仍由原生 AOE 配置；组合顺序为 `AOE → GAS Filter → FacingAngle → SortByDistance → Limit`。
+
+打开 Gameplay Debugger，选中施法者并启用 `Pineco`。红框使用原生 AOE Task 的位置、旋转和尺寸，空查询也显示范围。冲刺窗口同步最新查询的序号、服务端时间和几何参数。客户端每帧最多接收一个新位置用于绘制，在本地保留已画出的轨迹，按查询时间和调试寿命到期。普通点攻击和结尾甩击分别记录各自的范围。
+
+绿色点取自查询结果的 `ImpactPoint`。窗口仅标记本次跨 Tick 去重后交给 GA 的目标。点攻击在末尾 `Limit` 完成数量裁剪后采集 Pawn 命中，甩击可再次标记同一目标。启用 FacingAngle 的圆柱预设还显示青色筛选扇区。开发配置下可用 `Log LogPinecoTargetingDisplay VeryVerbose` 按样本序号对照服务端完成查询、客户端收到和首次绘制的时间。客户端时间采用 GameState 的服务端时间估计。
+
+该蓝图的 `BP_ShouldFilterTarget` 图按候选校验、Subsystem、请求来源、水平重合保护、角度判定划分五个中文注释区，跨区数据线使用 Reroute。编辑器蓝图编译通过，0 错误／0 警告；本次接入尚未进行 PIE、联机、性能或原游戏边界对照验证。
+
 ## 依赖、命名迁移与调试
 
-`Pineco.uplugin` 只声明两个运行模块，显式依赖 `GameplayAbilities` 和 `TargetingSystem` 插件。`PinecoAnimation` 公开依赖 `GameplayTags`／`TargetingSystem`，私有依赖 `GameplayAbilities`；`PinecoGAS` 公开依赖 `TargetingSystem`，私有依赖 `GameplayAbilities`。两个模块不再互相依赖，均显式设置 `PCHUsageMode.Default` 和 `bLegacyParentIncludePaths = true`。引擎源码未修改。
+`Pineco.uplugin` 声明业务模块 `PinecoAnimation`、`PinecoGAS` 和开发配置下的 `PinecoDebug`。调试模块私有依赖 `PinecoGAS` 与原生 `TargetingSystem`，并使用 UBT 的 `SetupGameplayDebuggerSupport`。业务模块的依赖由各自的模块规则声明。
 
 `Config/DefaultPineco.ini` 使用原生 ClassRedirect，将 `/Script/PinecoAnimation.AnimNotify_PinecoTrace` 映射为 `/Script/PinecoAnimation.AnimNotify_PinecoTargeting`。这只保留 Notify 的类身份；旧形状数据不会自动变成 Preset，也不为已删除的函数创建签名不匹配的重定向。
 
-自定义 `pineco.Trace.DebugDraw`、`PinecoTrace::Debug` 与自定义绘制实现均已删除。`/Game/ConsoleVariables/Gameplay` 已移除旧开关，保留并勾选原生 `ts.debug.EnableTargetingDebugging = 1`、`ts.debug.OverrideTargetingLifeTime = 1.25` 及同进程 PIE 的 `ShowFlag.ServerDrawDebug = 1`，其他条目保留原值、顺序和勾选状态，共 16 项。项目 `Config/DefaultEngine.ini` 的 `[ConsoleVariables]` 已登记同样的三个启动值，落实默认开启约定；当前运行值已核对，配置写入后未再次重启，启动加载未单独复验。
+项目启动配置和 `Gameplay` 控制台预设将 `ts.debug.EnableTargetingDebugging` 设为 `0`。分类使用 `ts.debug.OverrideTargetingLifeTime` 控制红框、绿点和青色扇区的显示时间，项目默认 `1.25` 秒。当前实现已静态核对，运行显示需在加载新版模块后验证。
 
-Box 轮廓由原生 AOE Task 绘制为红色，使用与查询相同的来源、偏移、旋转和碰撞形状；Pineco 没有另写绘制或调试 RPC。专服绘制到客户端的转发只在本次同进程 PIE 下验证，不代表独立进程／打包服务器会网络复制调试线。
+此前的同进程 PIE 专服测试验证了原生 AOE Task 的红色 Box 转发。当前版本由 Pineco 分类绘制，使用同一组查询参数。
 
 ## 资产迁移与定点双客户端验证（2026-11-13）
 
@@ -85,6 +106,26 @@ Box 轮廓由原生 AOE Task 绘制为红色，使用与查询相同的来源、
 日志观察到 6 条 PIE 启动阶段的 NetworkPrediction 回滚提示；临时移动假人产生 4 条 Mover 带外位置警告，未修改 Mover 或推断这已完成网络稳定性验收。四次攻击窗口未见事件拒绝、Blueprint Runtime Error 或 Deep PredictionKey Chain。其他工具诊断和验证边界保留在报告中。
 
 完成后本轮 PIE 已停止，原生 `Worlds=[]`；回调已注销，两个临时捕获组件销毁、渲染目标释放，公开 Python 任务变量清理。地图无未保存状态，临时摆位未写盘，其他未保存资产保持原状。报告追加到 `Saved/Automation/TrainingDummyGAS/verification.json` 的 `native_preset_migration_verification`，保留原有 20 个根字段；未新增持久 Python 脚本。该验证只覆盖当前同进程固定站位 Box 功能，不覆盖延迟／丢包、其他形状、32 玩家负载或性能目标。
+
+## 假人受击 Cue 归属与随机段名（2026-11-13）
+
+现行 Cue 为 `/Nickit/dzs/Characters/TrainingDummy/GameplayCues/GCN_TrainingDummy_Hit`，随 Nickit 假人资源提供，便于其他项目使用。它通过 `MyTarget` 获取有效 SkeletalMeshComponent，不引用 AsuraNext 角色类；资源语义和跨项目接入条件以 [Nickit Context](../unreal-nickit/Context.md#trainingdummy-受击-cue-与跨项目接入) 为准。
+
+`OnExecute` 使用 Name 数组 `[Hit_01, Hit_02, Hit_03]` 与原生 `KismetArrayLibrary.Array_Random`（Random Array Item），一次等概率选取一个段名供 `Montage_JumpToSection` 消费；已删除两组 Random Bool／Select Name。增减受击段只需调整数组，三个 Montage Section 的资源及非循环播放方式保持原样。随机仍为各客户端独立的表现，不要求两端选择相同的段。
+
+`GE_Damage` 与 Cue 现统一使用 `GameplayCue.Hit`。宿主假人蓝图的 Gengar 组件引用 Nickit 原生 `DA_TrainingDummy_Cues`，将共享语义 Tag 映射为假人专用表现；已启用 Gengar CueManager，移除 Nickit 全局扫描配置与旧专用 Tag。Nickit 资产只依赖原生 GAS，不依赖 Pineco 或宿主角色类；组件和路由的通用语义见 [Gengar Context](../unreal-gengar/Context.md)。伤害与 Health 复制继续由宿主 GAS 处理，PCharacter 源码未改动。
+
+`OnExecute` 保持网格获取、Montage 播放、随机段名和失败返回四区，检查布局并更新本地 CueSet 路由注释；假人 EventGraph 同步更新职责说明。假人、GE 和 Cue 蓝图编译均为 0 错误／0 警告并保存。原始 `GCN_PinecoBox_Hit` 路径与迁移中间副本均已删除；中间副本此前经用户单独授权，仅在停用并核对无磁盘引用后强制删除。
+
+### Gengar 组件路由双客户端验证（2026-11-13）
+
+加载用户完整构建的 C++，保存配置和资产后冷启动编辑器，实际全局 Manager 为 `GengarGameplayCueManager`，全局 CueSet 为空；目标的一个 Gengar 组件持有 Nickit 原生 CueSet，私有 Cue 不参加全局扫描。未执行新的 C++ 编译或 Live Coding。
+
+09:15:13～09:30:17（Asia/Shanghai），本轮 Dedicated Server `Context_6` 与双客户端 `Context_7/8` 运行约 904 秒。核对 PlayerId 258／259、本地玩家 0 及各自 Controller／Pawn，沿用用户正式快捷栏验证授权，由官方原生 MCP 驱动客户端 1 的 quan1，不经 Python 激活能力或发送事件／RPC。只在服务器运行世界临时移动四个已有假人以验证截断，未写入地图。
+
+三次受控命中时间为 09:23:48.931、09:24:36.947、09:24:49.230。原生 Targeting 每次结果均为 3；C_0／C_1／C_3 的 Health 三端均为 100→90→80→70，C_2 在该受控窗口保持 100。共 18 条原生 `GameplayCue.Hit - Executed`，对应 3 拳×3 目标×2 客户端。72.805 秒、4096 行只读采样覆盖前两拳的 12 次客户端受击：各次只有一个 Section，覆盖三种段名，约 0.613～0.633 秒结束，无串段／重复；第三拳验证了扣血和 Cue 次数，未采样其动画。随后存在额外非本轮输入的攻击，不并入三次受控验收；停止前 C_0／1／3 为 0、C_2 为 80，两端仍与服务器一致，其余 12 个假人均为 100。
+
+采样已注销、任务变量清理、诊断 Cue 日志开关恢复为 0，本轮 PIE 已停止，`Worlds=[]`、未保存包为 0。临时摆位未写盘。受控攻击所在的 09:23～09:24 日志窗口有 42 条 NetworkPrediction 输入饥饿恢复，本轮会话共 361 条；临时移动还产生 4 条 Mover 带外位置提示。未见 Blueprint Runtime Error、事件拒绝或 Deep PredictionKey Chain；不作网络稳定性、打包、跨进程或帧率达标结论。完整证据追加至 `Saved/Automation/TrainingDummyGAS/verification.json` 的 `gengar_component_cueset_verification`，历史字段保留。
 
 ## 迁移前职责与结果（历史记录）
 
