@@ -14,59 +14,74 @@
 
 namespace
 {
+    APinecoTargetActor* FindWindowTargetActor(const UAbilitySystemComponent& ASC, const USkeletalMeshComponent& Mesh)
+    {
+        APinecoTargetActor* Result = nullptr;
+        for (const auto& Actor : ASC.SpawnedTargetActors)
+        {
+            auto* Target = Cast<APinecoTargetActor>(Actor.Get());
+            if (!IsValid(Target) || Target->IsActorBeingDestroyed())
+            {
+                continue;
+            }
+
+            const auto* Ability = Target->OwningAbility.Get();
+            const auto* Info = IsValid(Ability) && Ability->IsActive() ? Ability->GetCurrentActorInfo() : nullptr;
+            if (!Info || Info->AvatarActor.Get() != Mesh.GetOwner() || Info->SkeletalMeshComponent.Get() != &Mesh)
+            {
+                continue;
+            }
+            // The window can publish to only one active target actor on this mesh.
+            if (Result)
+            {
+                return nullptr;
+            }
+            Result = Target;
+        }
+        return Result;
+    }
+
     void ForwardWindow(const UAnimNotifyState_PinecoTargetingWindow& Window,
                        const FBranchingPointNotifyPayload& Payload, EPinecoWindowPhase Phase)
     {
         auto* Mesh = Payload.SkelMeshComponent;
         auto* Avatar = IsValid(Mesh) ? Mesh->GetOwner() : nullptr;
-        if (!IsValid(Avatar) || !Avatar->HasAuthority() || !Payload.NotifyEvent)
+        if (!IsValid(Avatar) || !Avatar->HasAuthority() || !Payload.NotifyEvent || Payload.MontageInstanceID == INDEX_NONE)
         {
             return;
         }
-        auto* ASC = UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Avatar);
-        auto* Ability = ASC ? ASC->GetAnimatingAbility() : nullptr;
-        const auto* Info = IsValid(Ability) ? Ability->GetCurrentActorInfo() : nullptr;
-        auto* Anim = Info ? Info->GetAnimInstance() : nullptr;
+        const auto* ASC = UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Avatar);
+        auto* Target = IsValid(ASC) ? FindWindowTargetActor(*ASC, *Mesh) : nullptr;
+        auto* Anim = Mesh->GetAnimInstance();
         auto* Montage = Cast<UAnimMontage>(Payload.SequenceAsset);
-        if (!Anim || !Montage || Info->SkeletalMeshComponent.Get() != Mesh || Ability->GetCurrentMontage() != Montage)
+        if (!Target || !Anim || !Montage)
         {
             return;
         }
 
-        // GAS already tracks the targeting actors for this ASC. Scope delivery to this animating ability.
-        for (const auto& Actor : ASC->SpawnedTargetActors)
+        FPinecoWindowInput Input;
+        Input.Source = &Window;
+        Input.PlaybackId = Payload.MontageInstanceID;
+        if (Phase == EPinecoWindowPhase::Begin)
         {
-            auto* Target = Cast<APinecoTargetActor>(Actor.Get());
-            if (!IsValid(Target) || Target->OwningAbility != Ability)
+            const auto* Instance = Anim->GetActiveInstanceForMontage(Montage);
+            if (!Instance || Instance->GetInstanceID() != Input.PlaybackId)
             {
-                continue;
+                return;
             }
-            FPinecoWindowInput Input;
-            Input.Source = &Window;
-            Input.PlaybackId = Payload.MontageInstanceID;
-            if (Phase == EPinecoWindowPhase::Begin)
+            Input.TravelPreset = Window.TargetingPreset.Get();
+            const auto Section = Montage->GetSectionName(Montage->GetSectionIndexFromPosition(Payload.NotifyEvent->GetTime()));
+            Input.IsPlaybackCurrent = [WeakAnim = MakeWeakObjectPtr(Anim), WeakMontage = MakeWeakObjectPtr(Montage),
+                                       Id = Input.PlaybackId, Section]
             {
-                const auto* Instance = Anim->GetActiveInstanceForMontage(Montage);
-                if (!Instance || Instance->GetInstanceID() != Input.PlaybackId)
-                {
-                    return;
-                }
-                Input.TravelPreset = Window.TargetingPreset.Get();
-                const auto Section = Montage->GetSectionName(Montage->GetSectionIndexFromPosition(Payload.NotifyEvent->GetTime()));
-                Input.IsPlaybackCurrent = [WeakAnim = MakeWeakObjectPtr(Anim), WeakAbility = MakeWeakObjectPtr(Ability),
-                                           WeakMontage = MakeWeakObjectPtr(Montage), Id = Input.PlaybackId, Section]
-                {
-                    const auto* OwnerAbility = WeakAbility.Get();
-                    auto* AnimInstance = WeakAnim.Get();
-                    auto* Asset = WeakMontage.Get();
-                    const auto* Playing = AnimInstance && Asset ? AnimInstance->GetActiveInstanceForMontage(Asset) : nullptr;
-                    return OwnerAbility && OwnerAbility->GetCurrentMontage() == Asset && Playing && Playing->IsActive()
-                        && Playing->GetInstanceID() == Id && Playing->GetCurrentSection() == Section;
-                };
-            }
-            Target->UpdateWindow(Phase, Input);
-            return;
+                auto* AnimInstance = WeakAnim.Get();
+                auto* Asset = WeakMontage.Get();
+                const auto* Playing = AnimInstance && Asset ? AnimInstance->GetActiveInstanceForMontage(Asset) : nullptr;
+                return Playing && Playing->IsActive() && Playing->GetInstanceID() == Id
+                    && Playing->GetCurrentSection() == Section;
+            };
         }
+        Target->UpdateWindow(Phase, Input);
     }
 }
 

@@ -12,7 +12,39 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#include "PinecoGAS/Targeting/PinecoTargetActor.h"
 #include "TargetingSystem/TargetingPreset.h"
+
+namespace
+{
+    const UGameplayAbility* FindPointTargetAbility(const UAbilitySystemComponent& ASC,
+        const USkeletalMeshComponent& Mesh, FGameplayTag EventTag)
+    {
+        const UGameplayAbility* Result = nullptr;
+        for (const auto& Actor : ASC.SpawnedTargetActors)
+        {
+            const auto* Target = Cast<APinecoTargetActor>(Actor.Get());
+            if (!IsValid(Target) || Target->IsActorBeingDestroyed() || Target->PointEventTag != EventTag)
+            {
+                continue;
+            }
+
+            const auto* Ability = Target->OwningAbility.Get();
+            const auto* Info = IsValid(Ability) && Ability->IsActive() ? Ability->GetCurrentActorInfo() : nullptr;
+            if (!Info || Info->AvatarActor.Get() != Mesh.GetOwner() || Info->SkeletalMeshComponent.Get() != &Mesh)
+            {
+                continue;
+            }
+            // One event must address at most one target actor on this ASC.
+            if (Result)
+            {
+                return nullptr;
+            }
+            Result = Ability;
+        }
+        return Result;
+    }
+}
 
 UAnimNotify_PinecoTargeting::UAnimNotify_PinecoTargeting()
 {
@@ -42,18 +74,18 @@ void UAnimNotify_PinecoTargeting::Notify(USkeletalMeshComponent* MeshComp, UAnim
     // Notify objects are shared across actors and playbacks; only pass immutable asset configuration.
     Payload.OptionalObject = TargetingPreset;
     Payload.OptionalObject2 = Animation;
-    // Only the playback that owns this notification may address its ability's target actor.
+    // Route the live playback to the target actor listening for this event.
     const auto* Playback = EventReference.GetContextData<UE::Anim::FAnimNotifyMontageInstanceContext>();
-    const auto* Ability = ASC->GetAnimatingAbility();
-    const auto* Info = Ability ? Ability->GetCurrentActorInfo() : nullptr;
-    const auto* Anim = Info ? Info->GetAnimInstance() : nullptr;
+    const auto* Anim = MeshComp->GetAnimInstance();
     const auto* Montage = Cast<UAnimMontage>(Animation);
     const auto* Instance = Anim && Montage ? Anim->GetActiveInstanceForMontage(Montage) : nullptr;
-    if (Playback && Instance && Instance->GetInstanceID() == Playback->MontageInstanceID
-        && Info->SkeletalMeshComponent.Get() == MeshComp && Ability->GetCurrentMontage() == Montage)
+    if (Playback && Instance && Instance->GetInstanceID() == Playback->MontageInstanceID)
     {
-        Payload.ContextHandle = ASC->MakeEffectContext();
-        Payload.ContextHandle.SetAbility(Ability);
+        if (const auto* Ability = FindPointTargetAbility(*ASC, *MeshComp, EventTag))
+        {
+            Payload.ContextHandle = ASC->MakeEffectContext();
+            Payload.ContextHandle.SetAbility(Ability);
+        }
     }
     UAbilitySystemBlueprintLibrary::SendGameplayEventToActor(Owner, EventTag, Payload);
 }
