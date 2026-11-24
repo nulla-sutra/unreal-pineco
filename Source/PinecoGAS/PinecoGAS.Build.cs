@@ -6,7 +6,7 @@ public class PinecoGAS : ModuleRules
 {
     public PinecoGAS(ReadOnlyTargetRules Target) : base(Target)
     {
-        PCHUsage = PCHUsageMode.Default;
+        PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         bLegacyParentIncludePaths = true;
 
         PublicDependencyModuleNames.AddRange(new[]

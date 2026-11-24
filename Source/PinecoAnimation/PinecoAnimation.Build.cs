@@ -6,7 +6,7 @@ public class PinecoAnimation : ModuleRules
 {
     public PinecoAnimation(ReadOnlyTargetRules Target) : base(Target)
     {
-        PCHUsage = PCHUsageMode.Default;
+        PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         bLegacyParentIncludePaths = true;
 
         PublicDependencyModuleNames.AddRange(new[]
