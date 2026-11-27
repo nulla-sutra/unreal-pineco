@@ -56,12 +56,17 @@ UAnimNotify_PinecoTargeting::UAnimNotify_PinecoTargeting()
 void UAnimNotify_PinecoTargeting::Notify(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation,
                                        const FAnimNotifyEventReference& EventReference)
 {
+    auto* Owner = IsValid(MeshComp) ? MeshComp->GetOwner() : nullptr;
+    // Simulated proxies play this montage for presentation. Only the authority and predicting owner target hits.
+    if (IsValid(Owner) && Owner->GetLocalRole() == ROLE_SimulatedProxy) return;
     Super::Notify(MeshComp, Animation, EventReference);
 
+    // A Blueprint notify override may have destroyed or replaced the mesh owner.
+    Owner = IsValid(MeshComp) ? MeshComp->GetOwner() : nullptr;
     const auto* World = IsValid(MeshComp) ? MeshComp->GetWorld() : nullptr;
-    auto* Owner = IsValid(MeshComp) ? MeshComp->GetOwner() : nullptr;
-    auto* ASC = IsValid(Owner) ? UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Owner) : nullptr;
-    if (!World || !World->IsGameWorld() || !IsValid(Owner) || !IsValid(Animation) || !EventTag.IsValid()
+    const auto* ASC = IsValid(Owner) ? UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(Owner) : nullptr;
+    if (!World || !World->IsGameWorld() || !IsValid(Owner) || Owner->GetLocalRole() == ROLE_SimulatedProxy
+        || !IsValid(Animation) || !EventTag.IsValid()
         || !IsValid(TargetingPreset.Get()) || !IsValid(ASC))
     {
         return;
